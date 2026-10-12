@@ -46,27 +46,18 @@ const COUNTRIES = [
   "Spain",
   "South Africa",
   "Mexico",
+  "Russia"
 ];
 const startingWords = [
-  "panda",
-  "tiger",
-  "robot",
-  "ghost",
-  "piano",
-  "cloud",
-  "ocean",
-  "ninja",
-  "river",
-  "stone",
-  "flame",
-  "eagle",
+  "start",
+  "game",
+  "word",
+  "chain"
+  
 ];
 
-/* ----------------------------------------------------------- persistence
-   Matches live in memory (fast leaderboard) and are saved to Firebase Firestore
-   so they survive restarts and redeploys. If the FIREBASE_* variables are missing
-   (e.g. quick local testing) it falls back to data/matches.json, which is NOT
-   durable on hosts like Render or Railway. */
+/* ----------------------------------------------------------- persistence*/
+
 const DATA_FILE = path.join(__dirname, "data", "matches.json");
 let matches = [];
 let db = null;
