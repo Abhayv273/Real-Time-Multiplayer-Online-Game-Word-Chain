@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#0F111C" />
+    <title>Word Chain | Real-time multiplayer word battle</title>
+    <meta
+      name="description"
+      content="Chain words, beat the clock and outlast up to seven other players in real time."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-screen="hero">
+    <canvas id="bg-canvas" aria-hidden="true"></canvas>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- Join requests (host only) -->
+    <aside id="drawer" class="drawer" aria-label="Join requests">
+      <div class="drawer-head">
+        <h3>Join requests</h3>
+        <button id="drawer-close" class="icon-btn" aria-label="Close">
+          &#10005;
+        </button>
+      </div>
+      <p id="no-req" class="muted">No one is waiting to join.</p>
+      <div id="req-list" class="req-list"></div>
+    </aside>
+
+    <!-- Rules -->
+    <div id="rules-modal" class="overlay sheet dismissible hidden">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rules-title"
+      >
+        <h2 id="rules-title">How to play</h2>
+        <ol class="rules">
+          <li>
+            <b>Chain:</b> type a real English word (3+ letters) starting with
+            the last letter of the previous word.
+          </li>
+          <li><b>Time:</b> 10 seconds per turn. Time out = lose 1 life.</li>
+          <li><b>Lives:</b> everyone starts with 3.</li>
+          <li>
+            <b>Points(pts):</b> 3 letters = 1pts, 4 letters = 2pts, 5+ letters = 4pts and
+            +1 life (max 3).
+          </li>
+          <li><b>No repeats:</b> a word can be used only once per match.</li>
+          <li>
+            <b>Pause:</b> 2 per player. Only the player who paused can resume.
+          </li>
+          <li>
+            <b>Win:</b> match ends when one player is left with lives. Highest
+            score wins, equal scores = draw.
+          </li>
+          <li><b>Quit:</b> if everyone else quits, you win.</li>
+        </ol>
+        <button class="btn btn-primary btn-block" data-close="rules-modal">
+          Got it
+        </button>
+      </div>
+    </div>
+
+    <!-- Leaderboard + history -->
+    <div id="board-modal" class="overlay sheet dismissible hidden">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="board-title"
+      >
+        <h2 id="board-title">Leaderboard</h2>
+        <div class="seg" role="tablist">
+          <button class="seg-btn is-on" data-tab="players" role="tab">
+            Top players
+          </button>
+          <button class="seg-btn" data-tab="matches" role="tab">
+            Recent matches
+          </button>
+        </div>
+        <ol id="rank-list" class="list" data-panel="players"></ol>
+        <ol id="history-list" class="list hidden" data-panel="matches"></ol>
+        <button class="btn btn-ghost btn-block" data-close="board-modal">
+          Close
+        </button>
+      </div>
+    </div>
+
+    <!-- Quit confirmation -->
+    <div id="confirm-modal" class="overlay sheet hidden">
+      <div
+        class="modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+      >
+        <h2 id="confirm-title">Leave this match?</h2>
+        <p class="muted">
+          Your progress will be lost and the other players will be told you
+          left.
+        </p>
+        <div class="btn-row">
+          <button id="confirm-no" class="btn btn-ghost">Stay</button>
+          <button id="confirm-yes" class="btn btn-danger">Leave match</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause -->
+    <div id="pause-overlay" class="overlay hidden">
+      <div class="modal center">
+        <h2>Match paused</h2>
+        <p id="pause-text" class="muted"></p>
+        <p id="pause-count" class="big-count hidden">3</p>
+        <p id="pause-wait" class="muted hidden"></p>
+        <div class="stack">
+          <button id="pause-resume" class="btn btn-primary btn-block hidden">
+            Resume match
+          </button>
+          <button id="pause-quit" class="btn btn-ghost btn-block">
+            Leave match
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result -->
+    <div id="result-overlay" class="overlay hidden">
+      <div id="result-card" class="modal center result" data-outcome="win">
+        <button
+          id="result-close"
+          class="icon-btn modal-x"
+          aria-label="Close and view scores"
+        >
+          &#10005;
+        </button>
+        <h2 id="result-title">You won</h2>
+        <p id="result-name" class="result-name"></p>
+        <p id="result-sub" class="muted"></p>
+        <ol id="final-scoreboard" class="list"></ol>
+        <div id="result-timer-wrap" class="auto-return">
+          <p id="result-timer" class="muted"></p>
+          <div class="auto-track">
+            <div id="result-bar" class="auto-fill"></div>
+          </div>
+        </div>
+        <button id="result-back" class="btn btn-primary btn-block">
+          Back to lobby now
+        </button>
+      </div>
+    </div>
+
+    <div id="app">
+      <header class="topbar" id="topbar">
+        <a class="brand" href="/" aria-label="Word Chain home">
+          <span class="mark" aria-hidden="true"><i>W</i><i>C</i></span>
+          Word Chain
+        </a>
+        <nav class="topnav">
+          <button class="btn btn-ghost btn-sm" data-open="rules-modal">
+            Rules
+          </button>
+          <button class="btn btn-ghost btn-sm" data-open="board-modal">
+            Leaderboard
+          </button>
+        </nav>
+      </header>
+
+      <main class="stage">
+        <!-- HERO -->
+        <section id="screen-hero" class="screen active">
+          <div class="hero">
+            <div class="hero-copy">
+              <h1>Chain words. Outlast everyone.</h1>
+              <p class="lead">
+                Every word starts with the last letter of the one before it. Ten
+                seconds a turn, three lives, up to eight players.
+              </p>
+              <div class="demo" aria-hidden="true">
+                <div class="demo-row">
+                  <span class="tile">T</span><span class="tile">I</span
+                  ><span class="tile">G</span><span class="tile">E</span
+                  ><span class="tile link">R</span>
+                </div>
+                <div class="demo-row r2">
+                  <span class="tile link">R</span><span class="tile">O</span
+                  ><span class="tile">B</span><span class="tile">O</span
+                  ><span class="tile">T</span>
+                </div>
+              </div>
+            </div>
+
+            <form id="hero-form" class="card form" autocomplete="off">
+              <div class="seg" role="tablist">
+                <button
+                  type="button"
+                  class="seg-btn is-on"
+                  data-mode="create"
+                  role="tab"
+                >
+                  Create room
+                </button>
+                <button
+                  type="button"
+                  class="seg-btn"
+                  data-mode="join"
+                  role="tab"
+                >
+                  Join room
+                </button>
+              </div>
+
+              <label class="field">
+                <span>Nickname</span>
+                <input
+                  id="name-input"
+                  type="text"
+                  maxlength="15"
+                  placeholder="e.g. Aarav"
+                  autocomplete="nickname"
+                  required
+                />
+              </label>
+
+              <div class="row-2">
+                <label class="field">
+                  <span>Country</span>
+                  <select id="country-select">
+                    <option value="India" selected>India</option>
+                     <option value="Other">Other</option>
+                    <option value="USA">USA</option>
+                    <option value="UK">UK</option>
+                    <option value="China">China</option>
+                    <option value="UAE">UAE</option>
+                    <option value="Canada">Canada</option>
+                    <option value="Australia">Australia</option>
+                    <option value="Germany">Germany</option>
+                    <option value="Japan">Japan</option>
+                    <option value="France">France</option>
+                    <option value="Russia">Russia</option>
+                    <option value="Brazil">Brazil</option>
+                    <option value="Saudi Arabia">Saudi Arabia</option>
+                    <option value="South Korea">South Korea</option>
+                    <option value="Singapore">Singapore</option>
+                    <option value="Italy">Italy</option>
+                    <option value="Spain">Spain</option>
+                    <option value="South Africa">South Africa</option>
+                    <option value="Mexico">Mexico</option>
+                   
+                  </select>
+                </label>
+                <label class="field">
+                  <span id="room-label">New room ID</span>
+                  <input
+                    id="room-input"
+                    type="text"
+                    maxlength="10"
+                    placeholder="Pick a short code"
+                    autocapitalize="characters"
+                    required
+                  />
+                </label>
+              </div>
+
+              <button
+                id="hero-cta"
+                class="btn btn-primary btn-block"
+                type="submit"
+              >
+                Create room
+              </button>
+
+              <p id="join-status" class="join-status hidden">
+                <span id="join-status-text"></span>
+                <button type="button" id="join-cancel" class="link-btn">
+                  Cancel
+                </button>
+              </p>
+            </form>
+          </div>
+        </section>
+
+        <!-- LOBBY -->
+        <section id="screen-lobby" class="screen">
+          <div class="card lobby">
+            <div class="lobby-head">
+              <div>
+                <p class="muted">Room ID</p>
+                <h2 id="display-room" class="room-code"></h2>
+              </div>
+              <div class="lobby-tools">
+                <button id="copy-room" class="btn btn-ghost btn-sm">
+                  Copy invite link
+                </button>
+                <button
+                  id="host-bell"
+                  class="icon-btn bell hidden"
+                  aria-label="Join requests"
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+                  </svg>
+                  <span id="req-count" class="count hidden">0</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="seat-row">
+              <span id="seat-count">1/8 players</span>
+              <span id="lobby-hint" class="muted"></span>
+            </div>
+            <ul id="lobby-players" class="roster-list"></ul>
+            <p id="countdown-msg" class="countdown" aria-live="polite"></p>
+
+            <div class="btn-row">
+              <button id="leave-btn" class="btn btn-ghost">Leave room</button>
+              <button id="ready-btn" class="btn btn-primary">I'm ready</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- GAME -->
+        <section id="screen-game" class="screen">
+          <div class="game">
+            <div class="game-bar">
+              <div id="turn-banner" class="turn-pill">
+                <span class="dot"></span><span id="turn-text">Loading</span>
+              </div>
+              <div class="game-actions">
+                <button id="pause-btn" class="btn btn-warn btn-sm">
+                  Pause (2)
+                </button>
+                <button id="quit-btn" class="btn btn-danger btn-sm">
+                  Quit
+                </button>
+                <button id="lobby-btn" class="btn btn-primary btn-sm hidden">
+                  Back to lobby
+                </button>
+              </div>
+            </div>
+
+            <div class="game-grid">
+              <aside class="roster" aria-label="Players">
+                <ol id="game-players" class="roster-list"></ol>
+              </aside>
+
+              <section class="board card">
+                <div class="timer">
+                  <div class="timer-track">
+                    <div id="timer-bar" class="timer-fill"></div>
+                  </div>
+                  <span id="timer-num" class="timer-num">10</span>
+                </div>
+                <div
+                  id="word-history"
+                  class="chain"
+                  aria-label="Words so far"
+                ></div>
+                <div id="current-word" class="target" aria-live="polite"></div>
+                <p class="hint">
+                  Type a word that starts with <b id="required-letter">_</b>
+                </p>
+                <form id="word-form" class="word-form" autocomplete="off">
+                  <input
+                    id="word-input"
+                    type="text"
+                    placeholder="Wait for your turn"
+                    maxlength="30"
+                    autocomplete="off"
+                    autocapitalize="none"
+                    autocorrect="off"
+                    spellcheck="false"
+                    enterkeyhint="go"
+                    disabled
+                  />
+                  <button
+                    id="submit-btn"
+                    class="btn btn-primary"
+                    type="submit"
+                    disabled
+                  >
+                    Enter
+                  </button>
+                </form>
+                <p id="error-msg" class="error-msg" role="alert"></p>
+              </section>
+            </div>
+          </div>
+        </section>
+      </main>
+      <!-- FOOTER -->
+      <footer class="app-footer">
+        <span>Word Chain Multiplyer Online Game &copy; 2026</span>
+        <span
+          >Developer
+          <a
+            href="https://mail.google.com/mail/?view=cm&fs=1&to=abhay73verma%40gmail.com&utm_source=chatgpt.com"
+            target="_blank"
+            rel="noopener"
+            >Abhay Verma</a
+          ></span
+        >
+      </footer>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
