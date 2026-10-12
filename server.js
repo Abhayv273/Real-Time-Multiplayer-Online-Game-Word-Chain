@@ -758,6 +758,6 @@ const PORT = process.env.PORT;
 
 
 server.listen(PORT,() => {
-  console.log(`Server running on http://${HOST}`);
+  console.log(`Server running on http://${PORT}`);
   loadMatches();
 });
