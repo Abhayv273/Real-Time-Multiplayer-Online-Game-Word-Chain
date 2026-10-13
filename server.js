@@ -7,6 +7,7 @@ const express = require("express");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const { Server } = require("socket.io");
 const wordList = require("an-array-of-english-words");
 
@@ -46,36 +47,104 @@ const COUNTRIES = [
   "Spain",
   "South Africa",
   "Mexico",
-  "Russia"
 ];
 const startingWords = [
-  "start",
-  "game",
-  "word",
-  "chain"
+  "WORD",
+  "CHAIN",
+  "GAME",
+  "PLAY",
+  "CRYPT",
+  "QUORUM",
+  "VORTEX",
+  "ZEPHYR",
+  "GYPH",
+  "BIVOUAC",
+  
+
   
 ];
 
-/* ----------------------------------------------------------- persistence*/
-
+/* ----------------------------------------------------------- persistence
+   Matches live in memory (fast leaderboard) and are saved to a store so they survive restarts.
+   The store is chosen at startup, in this order:
+     1. Firebase Admin SDK  (service account)  <- recommended: the database can be fully locked
+     2. Firebase web SDK    (public web config) <- older setup: the database must stay publicly readable
+     3. Local file data/matches.json            <- development only, not durable on most hosts */
 const DATA_FILE = path.join(__dirname, "data", "matches.json");
+const COLLECTION = "matches";
 let matches = [];
-let db = null;
-let fb = null;
 
 // DISABLE_PERSISTENCE=1 is used by the automated tests so they never write real data
 const PERSIST = process.env.DISABLE_PERSISTENCE !== "1";
+const matchDocId = (m) => `${m.timestamp}-${m.matchId}`; // two matches can never overwrite each other
 
-if (
-  PERSIST &&
-  process.env.FIREBASE_PROJECT_ID &&
-  process.env.FIREBASE_API_KEY &&
-  process.env.FIREBASE_APP_ID
-) {
+// Service account from the environment: either the whole JSON in FIREBASE_SERVICE_ACCOUNT,
+// or the three values FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.
+function serviceAccountFromEnv() {
+  const fixKey = (account) => {
+    if (typeof account.private_key === "string")
+      account.private_key = account.private_key.replace(/\\n/g, "\n");
+    return account;
+  };
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      return fixKey(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT));
+    } catch (err) {
+      console.error("FIREBASE_SERVICE_ACCOUNT is not valid JSON:", err.message);
+      return null;
+    }
+  }
+  const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } =
+    process.env;
+  if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY)
+    return fixKey({
+      project_id: FIREBASE_PROJECT_ID,
+      client_email: FIREBASE_CLIENT_EMAIL,
+      private_key: FIREBASE_PRIVATE_KEY,
+    });
+  return null;
+}
+
+function makeAdminStore() {
+  const account = serviceAccountFromEnv();
+  if (!account) return null;
+  try {
+    const { initializeApp, cert } = require("firebase-admin/app");
+    const { getFirestore } = require("firebase-admin/firestore");
+    const db = getFirestore(initializeApp({ credential: cert(account) }));
+    db.settings({ ignoreUndefinedProperties: true });
+    return {
+      name: "Firebase Admin SDK (database can be locked down)",
+      load: async () => {
+        const snap = await db
+          .collection(COLLECTION)
+          .orderBy("timestamp", "desc")
+          .limit(500)
+          .get();
+        return snap.docs.map((d) => d.data()).reverse(); // oldest first
+      },
+      save: (match) =>
+        db.collection(COLLECTION).doc(matchDocId(match)).set(match),
+    };
+  } catch (err) {
+    console.error("Firebase Admin could not start:", err.message);
+    return null;
+  }
+}
+
+function makeWebStore() {
+  if (
+    !(
+      process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_API_KEY &&
+      process.env.FIREBASE_APP_ID
+    )
+  )
+    return null;
   try {
     const { initializeApp } = require("firebase/app");
-    fb = require("firebase/firestore");
-    db = fb.getFirestore(
+    const fb = require("firebase/firestore");
+    const db = fb.getFirestore(
       initializeApp({
         apiKey: process.env.FIREBASE_API_KEY,
         authDomain: process.env.FIREBASE_AUTH_DOMAIN,
@@ -85,17 +154,51 @@ if (
         appId: process.env.FIREBASE_APP_ID,
       }),
     );
-    console.log("Storage: Firebase Firestore (collection: matches)");
+    console.warn(
+      "WARNING: using the public Firebase web config. Add a service account to lock the database (see README).",
+    );
+    return {
+      name: "Firebase web SDK (public config, database stays readable)",
+      load: async () => {
+        const q = fb.query(
+          fb.collection(db, COLLECTION),
+          fb.orderBy("timestamp", "desc"),
+          fb.limit(500),
+        );
+        return (await fb.getDocsFromServer(q)).docs
+          .map((d) => d.data())
+          .reverse();
+      },
+      save: (match) =>
+        fb.setDoc(fb.doc(db, COLLECTION, matchDocId(match)), match),
+    };
   } catch (err) {
-    console.error("Firebase init failed:", err.message);
-    db = null;
+    console.error("Firebase web SDK could not start:", err.message);
+    return null;
   }
 }
-if (!PERSIST) console.log("Storage: disabled (test mode)");
-else if (!db)
-  console.log(
-    "Storage: local file data/matches.json (not durable on most hosts)",
-  );
+
+function makeFileStore() {
+  return {
+    name: "local file data/matches.json (not durable on most hosts)",
+    load: async () => {
+      try {
+        return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      } catch {
+        return []; // first run, nothing saved yet
+      }
+    },
+    save: async () => {
+      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+      fs.writeFileSync(DATA_FILE, JSON.stringify(matches.slice(-500)));
+    },
+  };
+}
+
+const store = PERSIST
+  ? makeAdminStore() || makeWebStore() || makeFileStore()
+  : null;
+console.log(store ? `Storage: ${store.name}` : "Storage: disabled (test mode)");
 
 const withTimeout = (promise, ms = 8000) =>
   Promise.race([
@@ -106,54 +209,25 @@ const withTimeout = (promise, ms = 8000) =>
   ]);
 
 async function loadMatches() {
-  if (!PERSIST) return;
-  if (db) {
-    try {
-      const q = fb.query(
-        fb.collection(db, "matches"),
-        fb.orderBy("timestamp", "desc"),
-        fb.limit(500),
-      );
-      const snap = await withTimeout(fb.getDocsFromServer(q)); // fails loudly if Firestore is unreachable
-      const loaded = snap.docs.map((d) => d.data()).reverse(); // oldest first
-      matches = [
-        ...loaded,
-        ...matches.filter((m) => !loaded.some((l) => l.matchId === m.matchId)),
-      ];
-      console.log(`Loaded ${loaded.length} matches from Firestore`);
-    } catch (err) {
-      console.error("Could not load matches from Firestore:", err.message);
-    }
-    return;
-  }
+  if (!store) return;
   try {
-    matches = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch {
-    /* first run, nothing saved yet */
+    const loaded = await withTimeout(store.load());
+    matches = [
+      ...loaded,
+      ...matches.filter((m) => !loaded.some((l) => l.matchId === m.matchId)),
+    ];
+    console.log(`Loaded ${loaded.length} saved matches`);
+  } catch (err) {
+    console.error("Could not load saved matches:", err.message);
   }
 }
 
 async function persistMatch(match) {
-  if (!PERSIST) return;
-  if (db) {
-    try {
-      // document id = timestamp + match id, so two matches can never overwrite each other
-      await withTimeout(
-        fb.setDoc(
-          fb.doc(db, "matches", `${match.timestamp}-${match.matchId}`),
-          match,
-        ),
-      );
-    } catch (err) {
-      console.error("Could not save match to Firestore:", err.message); // match stays in memory
-    }
-    return;
-  }
+  if (!store) return;
   try {
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(matches.slice(-500)));
+    await withTimeout(store.save(match)); // the match stays in memory even if saving fails
   } catch (err) {
-    console.error("Could not save matches:", err.message);
+    console.error("Could not save match:", err.message);
   }
 }
 
@@ -184,7 +258,7 @@ function buildLeaderboard() {
   const players = [...board.values()]
     .sort((a, b) => b.wins - a.wins || b.best - a.best || a.games - b.games)
     .slice(0, 20);
-  return { players, matches: matches.slice(-15).reverse() };
+  return { players };
 }
 
 /* --------------------------------------------------------------- helpers */
@@ -197,6 +271,45 @@ const clean = (value, max) =>
     .trim()
     .slice(0, max);
 const normCountry = (c) => (COUNTRIES.includes(c) ? c : "Other");
+
+// Each browser keeps a random secret key. Only its SHA-256 hash is ever stored with a match,
+// so the key cannot be recovered from the database and match IDs alone unlock nothing.
+const hashKey = (key) =>
+  typeof key === "string" && key.length >= 16 && key.length <= 128
+    ? crypto.createHash("sha256").update(key).digest("hex")
+    : null;
+
+// Matches this player took part in (newest first). Nobody else's matches are ever returned.
+function historyFor(hash) {
+  if (!hash) return [];
+  return matches
+    .filter(
+      (m) => Array.isArray(m.players) && m.players.some((p) => p.h === hash),
+    )
+    .slice(-50)
+    .reverse()
+    .map((m) => {
+      const me = m.players.find((p) => p.h === hash);
+      const result = !m.winner
+        ? "draw"
+        : m.winner.name === me.name && m.winner.country === me.country
+          ? "won"
+          : "lost";
+      return {
+        matchId: m.matchId,
+        timestamp: m.timestamp,
+        result,
+        winnerName: m.winnerName,
+        players: m.players.map((p) => ({
+          name: p.name,
+          country: p.country,
+          score: p.score,
+          left: !!p.left,
+          isYou: p.h === hash,
+        })),
+      };
+    });
+}
 
 // Same country + same nickname (ignoring case and spaces) is never allowed.
 // Checked against every connected player and every waiting join request.
@@ -243,6 +356,7 @@ function newRoom(hostId) {
     paused: false,
     pausedBy: null,
     resumeTimer: null,
+    left: [], // players who quit during the current match (kept for the match record)
   };
 }
 
@@ -314,6 +428,7 @@ function startGame(room) {
   g.pausedBy = null;
   g.currentTurn = 0;
   g.chain = [];
+  g.left = [];
   g.currentWord = pickWord();
   g.usedWords = new Set([g.currentWord]);
   g.players.forEach((p) => {
@@ -414,11 +529,15 @@ function endGame(room, reason = "normal", quitName = null) {
       winner: winner ? { name: winner.name, country: winner.country } : null,
       winnerName: winner ? winner.name : "DRAW",
       maxScore,
-      players: g.players.map((p) => ({
-        name: p.name,
-        country: p.country,
-        score: p.score,
-      })),
+      players: [
+        ...g.players.map((p) => ({
+          name: p.name,
+          country: p.country,
+          score: p.score,
+          h: io.sockets.sockets.get(p.id)?.data.keyHash || null, // hash only, never sent to clients
+        })),
+        ...g.left,
+      ],
       timestamp: Date.now(),
     };
     matches.push(record);
@@ -459,6 +578,14 @@ function handleLeave(socket) {
   const idx = g.players.findIndex((p) => p.id === socket.id);
   if (idx === -1) return;
   const [left] = g.players.splice(idx, 1);
+  if (g.inProgress)
+    g.left.push({
+      name: left.name,
+      country: left.country,
+      score: left.score,
+      h: socket.data.keyHash || null,
+      left: true,
+    });
 
   if (g.players.length === 0) {
     stopTimers(g);
@@ -530,10 +657,15 @@ io.on("connection", (socket) => {
     });
 
   on("get_global_leaderboard", () => {
-    socket.emit("global_leaderboard_data", buildLeaderboard());
+    socket.emit("global_leaderboard_data", buildLeaderboard()); // top players only, no match history
   });
 
-  on("create_room", ({ room, name, country } = {}) => {
+  on("get_my_history", ({ key } = {}) => {
+    socket.emit("my_history_data", { matches: historyFor(hashKey(key)) });
+  });
+
+  on("create_room", ({ room, name, country, key } = {}) => {
+    socket.data.keyHash = hashKey(key);
     room = clean(room, 10).toUpperCase();
     name = clean(name, 15);
     if (!room || !name)
@@ -559,7 +691,8 @@ io.on("connection", (socket) => {
     emitPlayers(room);
   });
 
-  on("request_join", ({ room, name, country } = {}) => {
+  on("request_join", ({ room, name, country, key } = {}) => {
+    socket.data.keyHash = hashKey(key);
     room = clean(room, 10).toUpperCase();
     name = clean(name, 15);
     country = normCountry(country);
@@ -745,10 +878,10 @@ io.on("connection", (socket) => {
   on("disconnect", () => handleLeave(socket));
 });
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
+const HOST = "0.0.0.0";
 
-
-server.listen(PORT,() => {
-  console.log(`Server running on http://${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
   loadMatches();
 });

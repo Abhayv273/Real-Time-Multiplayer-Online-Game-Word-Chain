@@ -126,12 +126,13 @@ async function connect(url) {
   await c.connected;
   return c;
 }
+const keyOf = (name) => `key_${name}_0123456789abcdef`; // like the browser's private key (16+ chars)
 async function createRoom(host, room, name, country = "India") {
-  host.emit("create_room", { room, name, country });
+  host.emit("create_room", { room, name, country, key: keyOf(name) });
   await host.next("join_success");
 }
 async function joinRoom(host, guest, room, name, country = "India") {
-  guest.emit("request_join", { room, name, country });
+  guest.emit("request_join", { room, name, country, key: keyOf(name) });
   const req = await host.next(
     "join_request_received",
     (r) => r.targetName === name,
@@ -144,10 +145,11 @@ async function startMatch(url, n) {
   const id = ++seq;
   const room = `R${id}`;
   const clients = [];
+  const names = Array.from({ length: n }, (_, i) => `P${id}_${i}`);
   for (let i = 0; i < n; i++) clients.push(await connect(url));
-  await createRoom(clients[0], room, `P${id}_0`);
+  await createRoom(clients[0], room, names[0]);
   for (let i = 1; i < n; i++)
-    await joinRoom(clients[0], clients[i], room, `P${id}_${i}`);
+    await joinRoom(clients[0], clients[i], room, names[i]);
   clients.forEach((c) => c.emit("toggle_ready"));
   await Promise.all(
     clients.map((c) => c.next("game_started", () => true, 6000)),
@@ -156,6 +158,7 @@ async function startMatch(url, n) {
   return {
     room,
     clients,
+    names,
     turn,
     byId: (pid) => clients.find((c) => c.id === pid),
   };
@@ -634,7 +637,7 @@ describe("leaving and finishing a match", () => {
     assert.ok(srv.alive());
   });
 
-  test("a finished match with a score appears on the leaderboard", async () => {
+  test("a finished match counts for the public top-players list, but its details stay private", async () => {
     const { clients: cs, turn, byId } = await startMatch(srv.url, 2);
     clients.push(...cs);
     const winner = byId(turn.activePlayerId);
@@ -646,9 +649,76 @@ describe("leaving and finishing a match", () => {
     const over = await winner.next("game_over");
     winner.emit("get_global_leaderboard");
     const board = await winner.next("global_leaderboard_data");
-    assert.ok(board.matches.some((m) => m.matchId === over.matchId));
+    assert.equal(
+      board.matches,
+      undefined,
+      "the public payload must not contain any match history",
+    );
     const name = over.players.find((p) => p.id === winner.id).name;
     assert.ok(board.players.some((p) => p.name === name && p.wins >= 1));
+  });
+});
+
+describe("private match history", () => {
+  let srv;
+  const clients = [];
+  before(async () => {
+    srv = await startServer();
+  });
+  after(() => {
+    clients.forEach((c) => c.close());
+    srv.stop();
+  });
+
+  async function playScoredMatch() {
+    const m = await startMatch(srv.url, 2);
+    clients.push(...m.clients);
+    const winner = m.byId(m.turn.activePlayerId);
+    const loser = m.clients.find((c) => c !== winner);
+    const w = findWord(lastLetter(m.turn.currentWord), (x) => x.length >= 5);
+    winner.emit("submit_word", { word: w });
+    await loser.next("new_turn", (x) => x.currentWord === w);
+    loser.emit("quit_game");
+    const over = await winner.next("game_over");
+    const key = (c) => keyOf(m.names[m.clients.indexOf(c)]);
+    return { winner, loser, over, key };
+  }
+  const history = async (client, key) => {
+    client.emit("get_my_history", { key });
+    return (await client.next("my_history_data")).matches;
+  };
+
+  test("only the players of a match can see it; everyone else gets an empty list", async () => {
+    const { winner, loser, over, key } = await playScoredMatch();
+
+    const won = await history(winner, key(winner));
+    assert.equal(won[0]?.matchId, over.matchId);
+    assert.equal(won[0].result, "won");
+    assert.equal(won[0].players.filter((p) => p.isYou).length, 1);
+
+    const lost = await history(loser, key(loser)); // the player who quit keeps the match too
+    assert.equal(lost[0]?.matchId, over.matchId);
+    assert.equal(lost[0].result, "lost");
+    assert.ok(lost[0].players.some((p) => p.isYou && p.left));
+
+    const stranger = await connect(srv.url);
+    clients.push(stranger);
+    assert.deepEqual(await history(stranger, keyOf(`Stranger${++seq}`)), []);
+    assert.deepEqual(await history(stranger, undefined), []);
+    assert.deepEqual(await history(stranger, "short"), []);
+  });
+
+  test("history never leaks key hashes or other internals", async () => {
+    const { winner, key } = await playScoredMatch();
+    const text = JSON.stringify(await history(winner, key(winner)));
+    assert.doesNotMatch(text, /"h"\s*:/);
+    assert.doesNotMatch(text, /[0-9a-f]{64}/);
+  });
+
+  test("a new player starts with an empty history", async () => {
+    const fresh = await connect(srv.url);
+    clients.push(fresh);
+    assert.deepEqual(await history(fresh, keyOf(`Fresh${++seq}`)), []);
   });
 });
 

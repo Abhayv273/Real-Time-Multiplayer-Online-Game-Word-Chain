@@ -53,7 +53,7 @@
           <li><b>Time:</b> 10 seconds per turn. Time out = lose 1 life.</li>
           <li><b>Lives:</b> everyone starts with 3.</li>
           <li>
-            <b>Points(pts):</b> 3 letters = 1pts, 4 letters = 2pts, 5+ letters = 4pts and
+            <b>Points:</b> 1 to 3 letters = 1, 4 letters = 2, 5+ letters = 4 and
             +1 life (max 3).
           </li>
           <li><b>No repeats:</b> a word can be used only once per match.</li>
@@ -86,11 +86,23 @@
             Top players
           </button>
           <button class="seg-btn" data-tab="matches" role="tab">
-            Recent matches
+            My matches
           </button>
         </div>
         <ol id="rank-list" class="list" data-panel="players"></ol>
-        <ol id="history-list" class="list hidden" data-panel="matches"></ol>
+        <div class="hidden" data-panel="matches">
+          <input
+            id="history-search"
+            class="search"
+            type="search"
+            placeholder="Search by Match ID, e.g. 123456"
+            autocomplete="off"
+          />
+          <p class="muted private-note">
+            Only you and the players of a match can see it.
+          </p>
+          <ol id="history-list" class="list"></ol>
+        </div>
         <button class="btn btn-ghost btn-block" data-close="board-modal">
           Close
         </button>
@@ -189,14 +201,14 @@
               </p>
               <div class="demo" aria-hidden="true">
                 <div class="demo-row">
-                  <span class="tile">T</span><span class="tile">I</span
-                  ><span class="tile">G</span><span class="tile">E</span
-                  ><span class="tile link">R</span>
+                  <span class="tile">S</span><span class="tile">P</span
+                  ><span class="tile">E</span><span class="tile">E</span
+                  ><span class="tile link">L</span>
                 </div>
                 <div class="demo-row r2">
-                  <span class="tile link">R</span><span class="tile">O</span
-                  ><span class="tile">B</span><span class="tile">O</span
-                  ><span class="tile">T</span>
+                  <span class="tile link">L</span><span class="tile">I</span
+                  ><span class="tile">N</span><span class="tile">K</span
+                  >
                 </div>
               </div>
             </div>
@@ -227,7 +239,7 @@
                   id="name-input"
                   type="text"
                   maxlength="15"
-                  placeholder="playername"
+                  placeholder="username-abcd1234"
                   autocomplete="nickname"
                   required
                 />
@@ -238,7 +250,6 @@
                   <span>Country</span>
                   <select id="country-select">
                     <option value="India" selected>India</option>
-                     <option value="Other">Other</option>
                     <option value="USA">USA</option>
                     <option value="UK">UK</option>
                     <option value="China">China</option>
@@ -257,7 +268,7 @@
                     <option value="Spain">Spain</option>
                     <option value="South Africa">South Africa</option>
                     <option value="Mexico">Mexico</option>
-                   
+                    <option value="Other">Other</option>
                   </select>
                 </label>
                 <label class="field">
@@ -328,7 +339,7 @@
             </div>
 
             <div class="seat-row">
-              <span id="seat-count">1/6 players</span>
+              <span id="seat-count">1/8 players</span>
               <span id="lobby-hint" class="muted"></span>
             </div>
             <ul id="lobby-players" class="roster-list"></ul>
@@ -410,11 +421,11 @@
           </div>
         </section>
       </main>
-      <!-- FOOTER -->
+
       <footer class="app-footer">
-        <span>Real-Time Multiplayer Online Game &copy; 2026</span>
+        <span>Real-Time Multiplayer Word-Chain Game &copy; 2026</span>
         <span
-          >Developer
+          >Built by
           <a
             href="https://mail.google.com/mail/?view=cm&fs=1&to=abhay73verma%40gmail.com&utm_source=chatgpt.com"
             target="_blank"

@@ -37,6 +37,18 @@ const store = {
   },
 };
 
+// Private key that identifies this browser as "a player" without any account.
+// The server stores only a hash of it, and uses it to show you your own matches.
+function playerKey() {
+  let key = store.get("wc_key");
+  if (!key || key.length < 16) {
+    const bytes = crypto.getRandomValues(new Uint8Array(24));
+    key = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    store.set("wc_key", key);
+  }
+  return key;
+}
+
 const screens = {
   hero: $("screen-hero"),
   lobby: $("screen-lobby"),
@@ -75,7 +87,10 @@ function switchScreen(name) {
 
 function openModal(id) {
   $(id).classList.remove("hidden");
-  if (id === "board-modal") socket.emit("get_global_leaderboard");
+  if (id === "board-modal") {
+    socket.emit("get_global_leaderboard");
+    socket.emit("get_my_history", { key: playerKey() });
+  }
 }
 const closeModal = (id) => $(id).classList.add("hidden");
 
@@ -228,6 +243,7 @@ $("hero-form").addEventListener("submit", (e) => {
     room,
     name,
     country,
+    key: playerKey(),
   });
 });
 
@@ -608,7 +624,7 @@ $("result-close").addEventListener("click", () => {
 /* -------------------------------------------------------- leaderboard */
 const empty = (msg) => `<li class="empty">${msg}</li>`;
 
-socket.on("global_leaderboard_data", ({ players, matches }) => {
+socket.on("global_leaderboard_data", ({ players }) => {
   $("rank-list").innerHTML = players.length
     ? players
         .map(
@@ -622,9 +638,17 @@ socket.on("global_leaderboard_data", ({ players, matches }) => {
         )
         .join("")
     : empty("No matches yet. Finish a game to take the first spot.");
+});
 
-  $("history-list").innerHTML = matches.length
-    ? matches
+// "My matches": only matches this browser's player took part in
+let myMatches = [];
+function renderHistory() {
+  const q = $("history-search").value.trim().toUpperCase();
+  const list = q
+    ? myMatches.filter((m) => m.matchId.toUpperCase().includes(q))
+    : myMatches;
+  $("history-list").innerHTML = list.length
+    ? list
         .map((m) => {
           const d = new Date(m.timestamp);
           const when = isNaN(d)
@@ -632,20 +656,33 @@ socket.on("global_leaderboard_data", ({ players, matches }) => {
             : d.toLocaleDateString(undefined, {
                 day: "numeric",
                 month: "short",
-                year: "numeric",
               });
+          const label =
+            { won: "Won", lost: "Lost", draw: "Draw" }[m.result] || "";
           const who = m.players
-            .map((p) => `${esc(p.name)} ${p.score}`)
-            .join(" &middot; ");
+            .map(
+              (p) =>
+                `<span>${p.isYou ? `<b>You ${p.score}</b>` : `${esc(p.name)} ${p.score}${p.left ? " (left)" : ""}`}</span>`,
+            )
+            .join("");
           return `
         <li class="match">
-          <div class="match-top"><b>${m.winner ? esc(m.winner.name) + " won" : "Draw"}</b><span class="muted">${when}</span></div>
-          <p class="muted">${who}</p>
+          <div class="match-top"><span><span class="res ${esc(m.result)}">${label}</span><span class="match-id">${esc(m.matchId)}</span></span><span class="muted">${when}</span></div>
+          <p class="match-players">${who}</p>
         </li>`;
         })
         .join("")
-    : empty("No matches played yet.");
+    : empty(
+        q
+          ? "No match of yours with that ID."
+          : "No matches of yours yet. Play one and it will show up here.",
+      );
+}
+socket.on("my_history_data", ({ matches }) => {
+  myMatches = matches;
+  renderHistory();
 });
+$("history-search").addEventListener("input", renderHistory);
 
 /* -------------------------------------------- ambient letter background */
 (function ambientLetters() {
